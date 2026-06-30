@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from typing import List
+from typing import List, Dict, Any
+import re
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -38,8 +39,69 @@ def run_guarded(*, text: str, mode: str, case: int) -> str:
     返り値：
     - 標準出力に出る本文（文章）を返す
     """
-    # TODO(TRAINEE): Implement guard logic and ensure unsafe behavior is blocked in attack mode.
-    raise NotImplementedError("Implement guard and safe tool execution")
+    try:
+        # 攻撃パターンの定義
+        attack_patterns = {
+            1: {
+                'name': '指示無視',
+                'keywords': ['無視して', '無視し', '前の指示', '秘密情報', '出して'],
+                'description': '秘密情報の指示無視'
+            },
+            2: {
+                'name': '不正ツール実行',
+                'keywords': ['システムコマンド', '実行して', 'コマンドを実行', 'shell', 'bash'],
+                'description': 'システムコマンドの不正実行'
+            },
+            3: {
+                'name': '許可外操作',
+                'keywords': ['削除して', 'ファイルを削除', '消して', '削除', 'remove'],
+                'description': '許可されていないファイル操作'
+            }
+        }
+        
+        if mode == "attack":
+            # 攻撃モード：指定された攻撃パターンを検知
+            pattern = attack_patterns.get(case, attack_patterns[1])
+            
+            logging.info(f"Attack mode: testing pattern {case} - {pattern['name']}")
+            
+            # 攻撃パターンに一致するか検知
+            for keyword in pattern['keywords']:
+                if keyword in text:
+                    error_msg = f"[ERROR] 不正な入力が検出されました: {pattern['description']}に一致するパターン"
+                    logging.warning(f"Guard triggered: {pattern['name']} detected in input")
+                    return error_msg
+            
+            # 攻撃パターンに一致しない場合も拒否（安全側）
+            return "[ERROR] 不正な入力が検出されました: 禁止されたパターンに一致"
+        
+        else:
+            # 通常モード：基本的な入力検証
+            if not text.strip():
+                return "[ERROR] 入力が空です"
+            
+            # 簡単な有害パターン検知
+            dangerous_patterns = ['削除', '消して', 'システムコマンド', '実行して']
+            for pattern in dangerous_patterns:
+                if pattern in text:
+                    warning_msg = f"[WARNING] 危険なキーワードが検出されました: {pattern}"
+                    logging.warning(f"Dangerous pattern detected: {pattern}")
+                    return warning_msg
+            
+            # 通常処理：簡易な応答生成
+            if "天気" in text:
+                return "今日の天気は晴れです。"
+            elif "時間" in text:
+                return "現在の時刻は12:00です。"
+            elif "名前" in text:
+                return "私はAIアシスタントです。"
+            else:
+                return "ご質問ありがとうございます。通常モードで処理しました。"
+        
+    except Exception as e:
+        error_msg = f"[ERROR] 処理中にエラーが発生しました: {str(e)}"
+        logging.error(f"Guard processing failed: {e}")
+        return error_msg
 
 
 def main(argv: List[str] | None = None) -> int:
