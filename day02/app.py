@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 from typing import List, Optional
 
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError, NoCredentialsError, PartialCredentialsError, ReadTimeoutError
 from dotenv import load_dotenv
 
 
@@ -57,8 +61,101 @@ def invoke_bedrock(
     - 認証/権限/ネットワーク/タイムアウトなどは例外として投げてOK
      （main側で終了コード=1にしてstderrへ出ます）
     """
-    # TODO(TRAINEE): Implement Bedrock invocation and return the assistant text only.
-    raise NotImplementedError("Implement Bedrock invocation")
+    try:
+        # Bedrock Runtimeクライアントを作成（タイムアウト設定を反映）
+        config = Config(
+            read_timeout=timeout_sec,
+            connect_timeout=timeout_sec,
+            retries={'max_attempts': 0}  # リトライは無効化（タイムアウト制御のため）
+        )
+        client = boto3.client('bedrock-runtime', region_name=region, config=config)
+        
+        # モデルに応じたリクエストボディを作成
+        if model_id.startswith('anthropic.claude'):
+            # Claudeモデルの場合
+            request_body = {
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }
+        elif model_id.startswith('amazon.titan'):
+            # Titanモデルの場合
+            request_body = {
+                "inputText": prompt,
+                "textGenerationConfig": {
+                    "maxTokenCount": max_tokens,
+                    "temperature": temperature,
+                    "stopSequences": []
+                }
+            }
+        else:
+            # その他のモデル（汎用フォーマット）
+            request_body = {
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "temperature": temperature
+            }
+        
+        # Bedrock呼び出し
+        response = client.invoke_model(
+            modelId=model_id,
+            body=json.dumps(request_body)
+        )
+        
+        # レスポンスから回答本文を抽出
+        response_body = response.get('body').read()
+        response_data = json.loads(response_body)
+        
+        if model_id.startswith('anthropic.claude'):
+            # Claudeのレスポンス形式
+            if 'content' in response_data and len(response_data['content']) > 0:
+                return response_data['content'][0]['text']
+            else:
+                raise ValueError("No content in Claude response")
+        elif model_id.startswith('amazon.titan'):
+            # Titanのレスポンス形式
+            if 'results' in response_data and len(response_data['results']) > 0:
+                return response_data['results'][0]['outputText']
+            else:
+                raise ValueError("No results in Titan response")
+        else:
+            # その他のモデルの場合
+            if 'text' in response_data:
+                return response_data['text']
+            elif 'completion' in response_data:
+                return response_data['completion']
+            else:
+                raise ValueError(f"Unexpected response format for model {model_id}")
+                
+    except NoCredentialsError:
+        raise Exception("AWS認証情報が見つかりません。~/.aws/credentialsを確認してください。")
+    except PartialCredentialsError:
+        raise Exception("AWS認証情報が不完全です。アクセスキーとシークレットキーを確認してください。")
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'AccessDeniedException':
+            raise Exception(f"Bedrockへのアクセス権限がありません。IAMポリシーを確認してください: {e.response['Error']['Message']}")
+        elif error_code == 'ValidationException':
+            raise Exception(f"リクエストパラメータが無効です: {e.response['Error']['Message']}")
+        elif error_code == 'ModelTimeoutException':
+            raise Exception(f"モデルがタイムアウトしました。リクエストを再試行してください: {e.response['Error']['Message']}")
+        elif error_code == 'ModelNotReadyException':
+            raise Exception(f"モデルが準備できていません: {e.response['Error']['Message']}")
+        else:
+            raise Exception(f"Bedrock呼び出しエラー ({error_code}): {e.response['Error']['Message']}")
+    except ReadTimeoutError:
+        raise Exception(f"Bedrock呼び出しが{timeout_sec}秒でタイムアウトしました。ネットワーク接続を確認するか、timeout-secを増やしてください。")
+    except Exception as e:
+        if "timeout" in str(e).lower():
+            raise Exception(f"タイムアウトが発生しました: {str(e)}")
+        else:
+            raise Exception(f"予期せぬエラーが発生しました: {str(e)}")
 
 
 def main(argv: List[str] | None = None) -> int:
